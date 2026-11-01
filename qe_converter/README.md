@@ -1,6 +1,6 @@
 Quantum ESPRESSO Converter for CoQuí
 ------------------------------------
-**Last Updated:** Sep. 1, 2025
+**Last Updated:** Oct. 26, 2026
 
 This directory provides the Fortran source code `pw2coqui.f90` required to 
 interface **Quantum ESPRESSO (QE)** with **CoQuí**. The converter extracts 
@@ -65,16 +65,13 @@ in your QE build directory (typically `bin/` inside the build tree).
 
 ## Usage
 
-> **`pw2coqui.x` is serial only — run it on a single MPI rank.**
-> ```shell
-> pw2coqui.x < svo.pw2coqui.in          # or: mpirun -np 1 pw2coqui.x -in svo.pw2coqui.in
-> ```
-> The preceding `pw.x` scf/nscf steps are of course run in parallel as usual;
-> only the conversion is serial. The converter opens its HDF5 file, and every
-> group inside it, on `ionode` alone, so additional ranks have nothing valid to
-> write through. The program now refuses to start on more than one rank rather
-> than produce a damaged file. See issue
-> [#11](https://github.com/AbInitioQHub/coqui/issues/11).
+`pw2coqui.x` runs under MPI with the usual QE parallelization flags: k-point pools
+(`-nk`), plane-wave distribution within a pool (the default), and band groups (`-nb`).
+Only rank 0 writes the HDF5 file; the other ranks gather the distributed data to it.
+
+```shell
+mpirun -np 4 pw2coqui.x -nk 2 -in svo.pw2coqui.in    # or serially: pw2coqui.x < svo.pw2coqui.in
+```
 
 Once QE has been recompiled with the converter, you can proceed with the 
 CoQuí [Quickstart tutorials](https://github.com/AbInitioQHub/coqui-tutorial/blob/main/quickstart/01s_dft_to_coqui_converter.ipynb) 

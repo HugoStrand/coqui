@@ -46,16 +46,6 @@ PROGRAM pw2coqui
 
   CALL environment_start ( codename )
 
-  ! This converter is serial only; see qe_converter/README.md.
-  ! The HDF5 file handle and the group handles used throughout are opened on
-  ! ionode alone, and the projector gather in write_pp does not populate
-  ! vkb_g_root for every pool layout. On more than one rank the run therefore
-  ! either aborts inside HDF5 or -- worse -- exits 0 after writing
-  ! uninitialised memory into Hamiltonian/<pp_type>/projector_k*. Refuse the
-  ! run instead of producing a silently corrupt file.
-  IF ( nproc > 1 ) CALL errore ( codename, &
-    'the CoQui converter is serial only; rerun on a single MPI rank', 1 )
-
   prefix = 'pwscf'
   fname = ' '
   add_system = .true.
@@ -167,12 +157,16 @@ subroutine write_system(h5_f)
   integer, allocatable :: ityp_s(:)
   real(dp) :: enuc
   real(dp) :: v3(3,3)
-  real(dp), allocatable :: vn(:,:), wgt(:) 
+  real(dp), allocatable :: vn(:,:), wgt(:)
   character(len=2) :: isym 
   character, allocatable :: sp_names(:)
   type(c_ptr) ::  buf
   integer(hsize_t) :: text_length
   character(len=4), allocatable, target :: atm_(:)  ! MAM: do I need to reserve space for null termination?
+
+  ! ewald is collective: it reduces over intra_bgrp_comm
+  enuc = ewald( alat, nat, nsp, ityp, zv, at, bg, tau, &
+              omega, g, gg, ngm, gcutm, gstart, gamma_only, strf ) / e2
 
   if(ionode) then
 
@@ -202,8 +196,6 @@ subroutine write_system(h5_f)
       call qeh5_add_attribute(h5_s%id,"lspinorbit",0)
     endif
 
-    enuc = ewald( alat, nat, nsp, ityp, zv, at, bg, tau, &
-                omega, g, gg, ngm, gcutm, gstart, gamma_only, strf ) / e2
     call qeh5_add_attribute(h5_s%id,"nuclear_energy",enuc)
 
     v3(:,:) = at(:,:)*alat
@@ -306,7 +298,7 @@ subroutine write_system(h5_f)
 
     ! occupations
     do i=1,nkstot
-      vn(:,i) = wg(:,i)/wk(i) 
+      vn(:,i) = wg(:,i)/wk(i)
     enddo
     call qeh5_set_space(dset, vn(1,1), RANK=3, DIMENSIONS=[nbnd,nk,ns])
     call qeh5_open_dataset(h5_o, dset, ACTION='write', NAME="occ")
@@ -733,30 +725,29 @@ subroutine write_pp(h5_f)
     endif
 
     if(ionode) allocate ( vkb_g_root(npw_g(ik),nkb) )
-    if(ik_in_range .or. ionode) then
-      allocate ( vkb_g(npw_g(ik)) )
-    endif
+    ! every rank takes part in the gather below, so every rank needs the buffer
+    allocate ( vkb_g(npw_g(ik)) )
 
     do ikb = 1, nkb
 
+      vkb_g = ( 0.0D0, 0.0D0 )
       if ( npool .gt. 1 ) then
+        ! gather within the pool that holds ik
         if ( ik_in_range ) then
-          vkb_g = ( 0.0D0, 0.0D0 )
           CALL mergewf ( vkb(:,ikb), vkb_g, npw, igk_l2g, &
             me_pool, nproc_pool, root_pool, intra_pool_comm )
         endif
-        if ( ipsour .NE. ionode_id ) then 
-          call mp_get ( vkb_g_root(:,ikb), vkb_g, mpime, ionode_id, ipsour, ikb, &
-            world_comm )
+        ! send to ionode, unless ionode is that root already
+        if ( ipsour .NE. ionode_id ) then
+          call mp_get ( vkb_g, vkb_g, mpime, ionode_id, ipsour, ikb, world_comm )
         endif
       else
-        vkb_g = ( 0.0D0, 0.0D0 )
         call mergewf ( vkb(:,ikb), vkb_g, npw, igk_l2g, &
           mpime, nproc, ionode_id, world_comm )
-        if(ionode) vkb_g_root(:,ikb) = vkb_g(:)
-      endif 
+      endif
+      if(ionode) vkb_g_root(:,ikb) = vkb_g(:)
 
-    enddo 
+    enddo
 
     if(ionode) then
       write ( str_ik, '(I8)') ik-1
